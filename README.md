@@ -1,5 +1,5 @@
 Requirements
 ============
-- [QuTiP](qutip.org)
-- [PyQt4](qt-project.org)
-- [Matplotlib](matplotlib.org)
+- [QuTiP](http://qutip.org)
+- [PyQt4](http://qt-project.org)
+- [Matplotlib](http://matplotlib.org)

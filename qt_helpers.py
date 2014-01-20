@@ -7,6 +7,7 @@ from matplotlib.figure import Figure
 
 from pyqtgraph import ImageView
 import numpy as np
+from pyqtgraph.graphicsItems.InfiniteLine import InfiniteLine
 
 
 def increment_str(s):
@@ -34,7 +35,9 @@ class LayoutWidget(Qt.QFrame):
         for w in ws:
             self.addWidget(w)
 
-
+    def minimize(self):
+        self.setSizePolicy(Qt.QSizePolicy.Maximum, Qt.QSizePolicy.Maximum)
+        self.setContentsMargins(0,0,0,0)
 
 class VBox(LayoutWidget):
     _layout_cls = Qt.QVBoxLayout
@@ -59,11 +62,11 @@ class Parameter(Labelled):
         widget.setValue(initial)
         widget.setRange(min, max)
         widget.setSingleStep(step)
-        self.value = widget.value
-        self.setRange = widget.setRange
-        self.setSingleStep = widget.setSingleStep
-        self.valueChanged = widget.valueChanged
+        self._pwidget = widget
         super(Parameter, self).__init__(widget, name)
+
+    def __getattr__(self, item):
+        return getattr(self._pwidget, item)
 
 class Named(Qt.QGroupBox, VBox):
     def __init__(self, type="", name=None):
@@ -121,13 +124,13 @@ class NamedListModel(Qt.QAbstractListModel):
         return self._model_list[item]
 
 class NamedListView(Qt.QGroupBox, VBox):
-    list_model = NamedListModel
+    list_model_class = NamedListModel
     def __init__(self, plural_name=None):
         super(NamedListView, self).__init__()
         if plural_name is None:
-            plural_name = self.list_model.type_name + "s"
+            plural_name = self.list_model_class.type_name + "s"
         self.setTitle(plural_name)
-        self.model = self.list_model()
+        self.model = self.list_model_class()
 
         self.list_widget = Qt.QListView()
         self.list_widget.setModel(self.model)
@@ -139,8 +142,8 @@ class NamedListView(Qt.QGroupBox, VBox):
 #        self.addWidgets(self.list_widget, self.item_box)
         self.addWidgets(self.list_widget)
 
-        if self.list_model.default_factory is not None:
-            self.add_item(self.list_model.default_factory())
+        if self.list_model_class.default_factory is not None:
+            self.add_item(self.list_model_class.default_factory())
 
 
     def add_item(self, item):
@@ -167,6 +170,22 @@ class NamedListView(Qt.QGroupBox, VBox):
         self.current_item = self.model[idx.row()]
         self.current_item.show()
 
+class ButtonPair(HBox):
+    def __init__(self, text1, text2):
+        super(ButtonPair, self).__init__()
+        self._button1 = Qt.QPushButton(text1)
+        self._button2 = Qt.QPushButton(text2)
+        self._button2.hide()
+        self.clicked1 = self._button1.clicked
+        self.clicked2 = self._button2.clicked
+        self.clicked1.connect(self._button1.hide)
+        self.clicked1.connect(self._button2.show)
+        self.clicked2.connect(self._button1.show)
+        self.clicked2.connect(self._button2.hide)
+        self.addWidgets(self._button1, self._button2)
+
+
+
 class MPLImagePlot(FigureCanvasQTAgg):
     def __init__(self):
         self._figure = Figure()
@@ -178,6 +197,18 @@ class MPLImagePlot(FigureCanvasQTAgg):
         self.draw()
 
 class PyQtGraphImagePlot(ImageView):
+    def __init__(self, *args, **kwargs):
+        super(PyQtGraphImagePlot, self).__init__(*args, **kwargs)
+        self.ui.histogram.hide()
+        self.ui.roiBtn.hide()
+        self.ui.normBtn.hide()
+        self.line1 = InfiniteLine(pos=0, angle=0, movable=False)
+        self.line2 = InfiniteLine(pos=0, angle=90, movable=False)
+        self.addItem(self.line1)
+        self.addItem(self.line2)
+
     def plot(self, arr):
         self.setImage(np.array(arr))
+        self.line1.setPos(arr.shape[0]/2.)
+        self.line2.setPos(arr.shape[1]/2.)
 

@@ -1,165 +1,323 @@
-import sys
+import re
 from PyQt4 import Qt
-from matplotlib.backends.backend_qt4agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-from qutip import coherent_dm, propagator, num, destroy, mat2vec, vec2mat, Qobj, wigner
-from qutip import qeye, sigmaz, sigmam, tensor, basis, ket2dm, ptrace
+from qt_helpers import VBox, HBox, Form, Grid, Parameter, Labelled, Named, NamedListModel, NamedListView, increment_str, MPLImagePlot, PyQtGraphImagePlot
+from qutip import num, destroy, qeye, sigmaz, sigmam, tensor, mesolve, coherent, wigner
 import numpy as np
-from IPython.core.debugger import Tracer
+import sys
 
-class WignerWindow(Qt.QMainWindow):
-    """docstring for WignerWindow"""
+class Hamiltonian(Qt.QAbstractTableModel):
+    params = ["id", "a*ad", "a+hc", "sz", "sm+hc"]
     def __init__(self):
-        super(WignerWindow, self).__init__()
-        main_widget = Qt.QWidget()
-        main_widget.setLayout(Qt.QHBoxLayout())
-        params_controls_box = Qt.QWidget()
-        plots_box = Qt.QWidget()
-        params_box = Qt.QWidget()
-        controls_box = Qt.QWidget()
-        params_controls_box.setLayout(Qt.QVBoxLayout())
-        params_controls_box.layout().addWidget(params_box)
-        params_controls_box.layout().addWidget(controls_box)
-        main_widget.layout().addWidget(plots_box)
-        main_widget.layout().addWidget(params_controls_box)
-        self.setCentralWidget(main_widget)
-        plots_box.setLayout(Qt.QHBoxLayout())
-        self.plot_boxes, self.bar_set = [], []
-        self.wigner_figures, self.wigner_axes, self.wigner_canvases = [], [], []
-        for _ in range(2):
-            self.wigner_figures.append(Figure())
-            self.wigner_axes.append(self.wigner_figures[-1].add_subplot(111))
-            self.wigner_axes[-1].hold(False)
-            self.wigner_canvases.append(FigureCanvas(self.wigner_figures[-1]))
-            self.bar_set.append([Qt.QProgressBar() for _ in range(3)])
-            self.plot_boxes.append(Qt.QWidget())
-            self.plot_boxes[-1].setLayout(Qt.QVBoxLayout())
-            self.plot_boxes[-1].layout().addWidget(self.wigner_canvases[-1])
-            for b in self.bar_set[-1]:
-                b.setRange(0, 100)
-                self.plot_boxes[-1].layout().addWidget(b)
-        self.plot_widgets = zip(self.wigner_axes, self.wigner_canvases, self.bar_set)
-        for b in self.plot_boxes:
-            plots_box.layout().addWidget(b)
-        self.frequency_param = Qt.QDoubleSpinBox()
-        self.q_frequency_param = Qt.QDoubleSpinBox()
-        self.chi_param = Qt.QDoubleSpinBox()
-        self.kerr_param = Qt.QDoubleSpinBox()
-        self.decay_param = Qt.QDoubleSpinBox()
-        self.timestep_param = Qt.QDoubleSpinBox()
-        self.initial_state_param = Qt.QDoubleSpinBox()
-        self.fock_dim_param = Qt.QSpinBox()
-        self.params = {
-            "Cavity Frequency": (Qt.QDoubleSpinBox(), (0, 3, .01, 0)),
-            "Qubit Frequency": (Qt.QDoubleSpinBox(), (0, .3, .01, 0)),
-            "Chi": (Qt.QDoubleSpinBox(), (0, 3, .01, 0)),
-            "Kerr": (Qt.QDoubleSpinBox(), (0, .3, .01, 0)),
-            "Cavity Decay": (Qt.QDoubleSpinBox(), (0, .3, .01, 0)),
-            "Qubit Decay": (Qt.QDoubleSpinBox(), (0, .3, .01, 0)),
-            "Timestep": (Qt.QDoubleSpinBox(), (0.01, .3, .01, .2)),
-            "Initial Alpha": (Qt.QDoubleSpinBox(), (0, 2, .1, 1)),
-            "Initial Qubit Angle": (Qt.QDoubleSpinBox(), (0, 1, 0.01, .5)),
-            "Fock Dimension": (Qt.QSpinBox(), (4, 20, 1, 5)),
-            "Max Alpha": (Qt.QDoubleSpinBox(), (1, 10, .5, 4)),
-            "Alpha Points": (Qt.QSpinBox(), (25, 1000, 5, 100)),
+        super(Hamiltonian, self).__init__()
+        self.coefs = {}
+        for i, p1 in enumerate(self.params):
+            for j, p2 in enumerate(self.params[i:]):
+                self.coefs[(p1, p2)] = 0
+
+    def rowCount(self, parent=None):
+        return len(self.params)
+
+    def columnCount(self, parent=None):
+        return len(self.params)
+
+    def headerData(self, i, orientation, role):
+        if role == Qt.Qt.DisplayRole:
+            return self.params[i]
+
+    def data(self, index, role):
+        if role == Qt.Qt.DisplayRole:
+            i, j  = index.row(), index.column()
+            if j >= i:
+                pi, pj = self.params[i], self.params[j]
+                return str(self.coefs[(pi, pj)])
+
+    def setData(self, index, value, role):
+        if role == Qt.Qt.EditRole:
+            i, j = index.row(), index.column()
+            if j >= i:
+                pi, pj = self.params[i], self.params[j]
+                self.coefs[(pi, pj)] = str(value.toString())
+                self.dataChanged.emit(index, index)
+                return True
+        return False
+
+    def flags(self, index):
+        f = Qt.Qt.NoItemFlags
+        i, j = index.row(), index.column()
+        if j >= i:
+            f |= Qt.Qt.ItemIsEnabled
+            f |= Qt.Qt.ItemIsSelectable
+            f |= Qt.Qt.ItemIsEditable
+        return f
+
+    def copy(self):
+        new = Hamiltonian()
+        new.coefs = self.coefs.copy()
+        return new
+
+    def to_matrix(self, fd):
+        n = num(fd)
+        a = destroy(fd)
+        ic = qeye(fd)
+        sz = sigmaz()
+        sm = sigmam()
+        iq = qeye(2)
+
+        ms = {
+            "id": tensor(iq, ic),
+            "a*ad" : tensor(iq, n),
+            "a+hc" : tensor(iq, a),
+            "sz" : tensor(sz, ic),
+            "sm+hc" : tensor(sm, ic)
         }
 
-        params_box.setLayout(Qt.QFormLayout())
-        for pl, (p, (pmin, pmax, pstep, pd)) in self.params.items():
-            p.setRange(pmin, pmax)
-            p.setSingleStep(pstep)
-            p.setValue(pd)
-            params_box.layout().addRow(pl, p)
+        H0 = 0
+        H1s = []
+        for (p1, p2), v in self.coefs.items():
+            h = ms[p1] * ms[p2]
+            try:
+                term = float(v) * h
+                if not term.isherm:
+                    term += term.dag()
+                H0 += term
+            except ValueError:
+                H1s.append([h, v])
+        if H1s:
+            return [H0] + H1s
+        else:
+            return H0
 
-        self.reset_button = Qt.QPushButton('Reset')
-        self.prop_button = Qt.QPushButton('Change Propagator')
-        self.start_button = Qt.QPushButton('Start')
-        self.stop_button = Qt.QPushButton('Stop')
-        controls = (self.reset_button, self.prop_button, self.start_button, self.stop_button)
-        control_fns = (self.initialize, self.update_propagator, self.start, self.stop)
-        controls_box.setLayout(Qt.QVBoxLayout())
-        for c, f in zip(controls, control_fns):
-            controls_box.layout().addWidget(c)
-            c.clicked.connect(f)
-        self.stop_button.hide()
+class HamiltonianWidget(Named):
+    def __init__(self, model=None, name="Hmt1"):
+        super(HamiltonianWidget, self).__init__(name=name)
+        widget = Qt.QTableView()
+        self.model = model if model else Hamiltonian()
+        widget.setModel(self.model)
+        widget.resizeColumnsToContents()
+        widget.setSizePolicy(Qt.QSizePolicy.Preferred, Qt.QSizePolicy.Minimum)
+        self.addWidget(widget)
+
+    def copy(self):
+        return HamiltonianWidget(model=self.model.copy(), name=increment_str(self.name))
+
+class HamiltonianListModel(NamedListModel):
+    type_name = "Hamiltonian"
+    default_factory = HamiltonianWidget
+
+class HamiltonianListView(NamedListView):
+    list_model = HamiltonianListModel
+    def __init__(self):
+        super(HamiltonianListView, self).__init__()
+
+        copy_action = Qt.QAction("Copy", self)
+        copy_action.triggered.connect(self.copy_selected)
+        self.addAction(copy_action)
+        self.setContextMenuPolicy(Qt.Qt.ActionsContextMenu)
+
+    def copy_selected(self):
+        original = self.model.get_widget(self.list_widget.selectedIndexes()[0])
+        new = original.copy()
+        while new.name in self.model.names():
+            new.name = increment_str(new.name)
+
+        self.add_item(new)
+
+class Sequence(Qt.QAbstractTableModel):
+    def __init__(self):
+        Qt.QAbstractTableModel.__init__(self)
+        self.steps = []
+
+    def rowCount(self, parent=None):
+        if parent.isValid():
+            return 0
+        return len(self.steps)
+
+    def columnCount(self, parent=None):
+        return 2
+
+    def headerData(self, i, orientation, role=None):
+        if role == Qt.Qt.DisplayRole:
+            if orientation == Qt.Qt.Horizontal:
+                return ["Name", "Time Applied"][i]
+
+    def flags(self, index):
+        f = Qt.Qt.ItemIsEnabled | Qt.Qt.ItemIsSelectable
+        f |= Qt.Qt.ItemIsDragEnabled
+
+        if not index.isValid():
+            f |= Qt.Qt.ItemIsDropEnabled
+
+        if index.column() == 1:
+            f |= Qt.Qt.ItemIsEditable
+        return f
+
+    def data(self, index, role):
+        if role == Qt.Qt.DisplayRole:
+            i, j = index.row(), index.column()
+            if j == 0:
+                return self.steps[i][0].name
+            elif j == 1:
+                return self.steps[i][1]
+
+    def setData(self, index, value, role):
+        if role == Qt.Qt.EditRole:
+            i, j = index.row(), index.column()
+            v, ok = value.toFloat()
+            if not ok or (j != 1):
+                print 'Failed to set', value
+                return False
+            self.steps[i][j] = v
+            self.dataChanged.emit(index, index)
+            return True
+        return False
+
+    def mimeTypes(self):
+        return ["application/sequence-position"]
+
+    def mimeData(self, indices):
+        rows = set([i.row() for i in indices])
+        if len(rows) == 1:
+            res = Qt.QMimeData()
+            res.setData("application/sequence-position", str(rows.pop()))
+            return res
+
+    def dropMimeData(self, mime_data, action, row, col, parent):
+        if row > 0:
+            src_row = int(mime_data.data("application/sequence-position"))
+            item = self.steps.pop(src_row)
+            if row > src_row:
+                row -= 1
+            self.steps.insert(row, item)
+            self.modelReset.emit()
+            return True
+        return False
+
+    def to_state_list(self, fock_dim, psi0, timestep):
+        states = []
+        for widget, time in self.steps:
+            H = widget.model.to_matrix(fock_dim)
+            tlist = np.arange(0, time, timestep)
+            states.extend(mesolve(H, psi0, tlist, [], []).states)
+            psi0 = states[-1]
+        print len(states)
+        return states
+
+class SequenceView(Named):
+    def __init__(self, name="Seq1"):
+        super(SequenceView, self).__init__(name=name)
+        self.sequence_view = Qt.QTreeView()
+        self.sequence_view.setDragDropMode(Qt.QAbstractItemView.InternalMove)
+        self.sequence_view.setItemsExpandable(False)
+        self.sequence_view.setSelectionBehavior(Qt.QAbstractItemView.SelectRows)
+        self.sequence_view.setSelectionMode(Qt.QAbstractItemView.SingleSelection)
+        self.sequence_view.setDragDropOverwriteMode(False)
+        self.model = Sequence()
+        self.sequence_view.setModel(self.model)
+        self.addWidget(self.sequence_view)
 
 
-        self.initialize()
-        self.update_propagator()
+class SequenceListModel(NamedListModel):
+    type_name = "Sequence"
+    default_factory = SequenceView
 
-    def get(self, label):
-        return self.params[label][0].value()
+class SequenceListView(NamedListView):
+    list_model = SequenceListModel
 
-    def plot(self):
-        fd = self.get("Fock Dimension")
-        ma = self.get("Max Alpha")
-        na = self.get("Alpha Points")
-        wigner_xs = np.linspace(-ma, ma, na)
-        dm = Qobj(vec2mat(self.dm_vec), dims=[[2, fd], [2, fd]])
-        projectors = [tensor(ket2dm(basis(2,i)), qeye(fd)) for i in reversed(range(2))]
-        dms = [p * dm * p for p in projectors]
-        (pop0, coherence), (_, pop1) = ptrace(dm, 0).full()
-        pops = [pop0, pop1]
-        coherence /= np.sqrt(pop0 * pop1)
-        resids = [ptrace(d, 1) for d in dms]
-        wigner_arrays = [wigner(d, wigner_xs, wigner_xs) for d in resids]
-        for (axis, canvas, bars), pop, arr in zip(self.plot_widgets, pops, wigner_arrays):
-            axis.imshow(arr)
-            canvas.draw()
-            bars[0].setValue(np.abs(pop) * 100)
-            bars[1].setValue(np.abs(coherence) * 100)
-            tau = 2*np.pi
-            bars[2].setValue((np.angle(coherence) % tau) * 100 / tau)
+    def __init__(self):
+        super(SequenceListView, self).__init__()
 
-    def update_propagator(self):
-        w0 = self.get('Cavity Frequency')
-        wq = self.get('Qubit Frequency')
-        chi = self.get("Chi")
-        K = self.get('Kerr')
-        kappa = self.get("Cavity Decay")
-        gamma = self.get("Qubit Decay")
-        dt = self.get("Timestep")
-        fd = self.get("Fock Dimension")
+        self.setContextMenuPolicy(Qt.Qt.ActionsContextMenu)
+        new_action = Qt.QAction("New Sequence", self)
+        new_action.triggered.connect(self.new_sequence)
+        self.addAction(new_action)
 
-        n = tensor(qeye(2), num(fd))
-        a = tensor(qeye(2), destroy(fd))
-        sz = tensor(sigmaz(), qeye(fd))
-        sm = tensor(sigmam(), qeye(fd))
-        H = w0*n + K*n*n + (wq/2.)*sz + chi*n*sz
-        self.prop = propagator(H, dt, [kappa*a, gamma*sm]).data
+    def new_sequence(self):
+        new = SequenceView()
+        while new.name in self.model.names():
+            new.name = increment_str(new.name)
+        self.add_item(new)
 
-    def initialize(self):
-        alpha = self.get("Initial Alpha")
-        angle = self.get("Initial Qubit Angle")
-        qubit_state = ket2dm(np.sqrt(angle) * basis(2, 0) + np.sqrt(1 - angle) * basis(2, 1))
-        fd = self.get("Fock Dimension")
-        cavity_state = coherent_dm(fd, alpha)
-        self.dm_vec = mat2vec(tensor(qubit_state, cavity_state).full())
-        self.update_propagator()
-        self.plot()
+class SequenceEditor(VBox):
+    def __init__(self):
+        super(SequenceEditor, self).__init__()
+        self.hamiltonian_list = HamiltonianListView()
+        add_step_button = Qt.QPushButton("Add Hamiltonian as Step")
+        add_step_button.clicked.connect(self.add_selected)
+        self.sequence_list = SequenceListView()
+        self.fock_dim = Parameter("Fock Dimension", 8, 4, 30, 1, Qt.QSpinBox)
+        self.timestep = Parameter("Timestep", .1, .01, 1, .01)
+        self.initial_alpha = Parameter("Initial Alpha", 1, 0, 10, 1)
+        self.addWidgets(self.hamiltonian_list, add_step_button, self.sequence_list)
+        self.addWidgets(self.fock_dim, self.timestep, self.initial_alpha)
 
-    def update_state(self):
-        self.dm_vec = self.prop * self.dm_vec
-        self.plot()
+    def add_selected(self):
+        w = self.hamiltonian_list.selected_widget()
+        self.sequence_list.current_item.model.steps.append([w, 0])
+        self.sequence_list.current_item.model.modelReset.emit()
 
-    def start(self):
-        self.start_button.hide()
-        self.stop_button.show()
-        self.update_timer = Qt.QTimer()
-        self.update_timer.setInterval(100)
-        self.update_timer.timeout.connect(self.update_state)
-        self.update_timer.start()
+class TimeImagePlotter(Named):
+    def __init__(self, name, data):
+        super(TimeImagePlotter, self).__init__(name=name)
+        # self.wigner_plot = MPLImagePlot()
+        self.wigner_plot = PyQtGraphImagePlot()
+        self.data = data
+        self.time_slider = Parameter("Time", 0, 0, len(data)-1, 1, lambda: Qt.QSlider(Qt.Qt.Horizontal))
+        self.time_slider.valueChanged.connect(self.update_plot)
+        self.addWidgets(self.wigner_plot, self.time_slider)
+        self.update_plot()
 
-    def stop(self):
-        self.start_button.show()
-        self.stop_button.hide()
-        self.update_timer.stop()
+    def update_plot(self):
+        self.wigner_plot.plot(self.data[self.time_slider.value()])
 
-def main():
-    app = Qt.QApplication([])
-    win = WignerWindow()
-    win.show()
-    sys.exit(app.exec_())
+class WignerPlotter(TimeImagePlotter):
+    def __init__(self, name, state_data):
+        super(WignerPlotter, self).__init__(name, [[[0]]])
+        self.state_data = state_data
+        self.wigner_max = Parameter('Max Alpha', 4, 2, 12, .25)
+        update_button = Qt.QPushButton("Recalculate Wigners")
+        update_button.clicked.connect(self.update_wigners)
+        self.addWidget(HBox((self.wigner_max, update_button)))
+        self.update_wigners()
 
-if __name__ == '__main__':
-    main()
+    def update_wigners(self):
+        max_alpha = self.wigner_max.value()
+        wigner_xs = np.linspace(-max_alpha, max_alpha, 100)
+        wigner_fn = lambda a: wigner(a, wigner_xs, wigner_xs)
+        self.data = map(wigner_fn, self.state_data)
+        self.time_slider.setRange(0, len(self.data)-1)
+        self.update_plot()
+
+class ComputationsListModel(NamedListModel):
+    type_name = "Computation"
+
+class ComputationsListView(NamedListView):
+    list_model = ComputationsListModel
+
+class SequencePlotter(Qt.QSplitter):
+    def __init__(self):
+        super(SequencePlotter, self).__init__(Qt.Qt.Horizontal)
+        self.editor = SequenceEditor()
+        self.viewer = ComputationsListView()
+        compute_button = Qt.QPushButton("Compute Selected Sequence")
+        compute_button.clicked.connect(self.compute_selected)
+        self.addWidget(VBox((self.viewer, compute_button)))
+        self.addWidget(self.editor)
+
+    def compute_selected(self):
+        item = self.editor.sequence_list.current_item
+
+        fock_dim = self.editor.fock_dim.value()
+        timestep = self.editor.timestep.value()
+        initial_alpha = self.editor.initial_alpha.value()
+        psi0 = coherent(fock_dim, initial_alpha)
+
+        data = item.model.to_state_list(fock_dim, psi0, timestep)
+        self.viewer.add_item(WignerPlotter(item.name, data))
+
+
+
+
+app = Qt.QApplication([])
+win = SequencePlotter()
+win.show()
+sys.exit(app.exec_())

@@ -88,12 +88,18 @@ class NamedListModel(Qt.QAbstractListModel):
     type_name = ""
     default_factory = None
 
-    def __init__(self):
+    def __init__(self, widgets=None):
         super(NamedListModel, self).__init__()
-        self._model_list = []
+        if widgets is None:
+            if self.default_factory is None:
+                self.widget_list = []
+            else:
+                self.widget_list = [self.default_factory()]
+        else:
+            self.widget_list = widgets
 
     def rowCount(self, parent=None):
-        return len(self._model_list)
+        return len(self.widget_list)
 
     def data(self, idx, role=None):
         if role == Qt.Qt.DisplayRole:
@@ -101,27 +107,27 @@ class NamedListModel(Qt.QAbstractListModel):
 
     def setData(self, idx, value, role):
         if role == Qt.Qt.EditRole:
-            self._model_list[idx.row()].name = value.toString()
+            self.widget_list[idx.row()].name = value.toString()
             return True
         else:
             return False
 
     def names(self):
-        return [m.name for m in self._model_list]
+        return [m.name for m in self.widget_list]
 
     def get_widget(self, idx):
-        return self._model_list[idx.row()]
+        return self.widget_list[idx.row()]
 
     def add_item(self, item):
-        self._model_list.append(item)
-        i = self.index(len(self._model_list) - 1)
+        self.widget_list.append(item)
+        i = self.index(len(self.widget_list) - 1)
         self.dataChanged.emit(i, i)
 
     def flags(self, index):
         return Qt.Qt.ItemIsEnabled | Qt.Qt.ItemIsSelectable | Qt.Qt.ItemIsEditable
 
     def __getitem__(self, item):
-        return self._model_list[item]
+        return self.widget_list[item]
 
 class NamedListView(Qt.QGroupBox, VBox):
     list_model_class = NamedListModel
@@ -137,20 +143,27 @@ class NamedListView(Qt.QGroupBox, VBox):
         self.list_widget.selectionModel().selectionChanged.connect(self.change_item)
         self.list_widget.setSizePolicy(Qt.QSizePolicy.Preferred, Qt.QSizePolicy.Maximum)
 
-#        self.item_box = VBox()
-        self.current_item = None
-#        self.addWidgets(self.list_widget, self.item_box)
-        self.addWidgets(self.list_widget)
-
         if self.list_model_class.default_factory is not None:
-            self.add_item(self.list_model_class.default_factory())
+            self.setContextMenuPolicy(Qt.Qt.ActionsContextMenu)
+            new_item_action = Qt.QAction("New Item", self)
+            self.addAction(new_item_action)
+            new_item_action.triggered.connect(lambda: self.add_item(self.list_model_class.default_factory()))
+
+        self.current_item = None
+        self.addWidgets(self.list_widget)
+        self.addWidgets(*self.model.widget_list)
+        if self.model.widget_list:
+            self.list_widget.setCurrentIndex(self.model.index(0,0))
 
 
     def add_item(self, item):
+        while item.name in self.model.names():
+            item.name = increment_str(item.name)
+
         self.addWidget(item)
-#        item.nameChanged.connect(self.model.modelReset.emit)
         self.model.add_item(item)
         self.list_widget.resize(self.list_widget.sizeHint())
+
 
         if self.current_item is None:
             item.show()
@@ -211,4 +224,8 @@ class PyQtGraphImagePlot(ImageView):
         self.setImage(np.array(arr))
         self.line1.setPos(arr.shape[0]/2.)
         self.line2.setPos(arr.shape[1]/2.)
+
+class HorizontalSlider(Qt.QSlider):
+    def __init__(self, *args, **kwargs):
+        super(HorizontalSlider, self).__init__(Qt.Qt.Horizontal, *args, **kwargs)
 

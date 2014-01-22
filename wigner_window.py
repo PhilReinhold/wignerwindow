@@ -1,22 +1,38 @@
+import os
 import re
 from PyQt4 import Qt
 from qt_helpers import VBox, HBox, Parameter, Named, NamedListModel, NamedListView, increment_str, PyQtGraphImagePlot, ButtonPair
 from qutip import num, destroy, qeye, sigmaz, sigmam, tensor, mesolve, coherent_dm, wigner, basis, ket2dm
 import numpy as np
 import sys
+import json
+
+if not os.path.exists("~/.wigner"):
+    os.makedirs("~/.wigner")
+hamiltonian_filename = "~/.wigner/hamiltonians"
+sequence_filename = "~/.wigner/sequences"
 
 class Hamiltonian(Qt.QAbstractTableModel):
     params = ["id", "a*ad", "a+hc", "sz", "sm+hc"]
     images = ["id.png", "aad.png", "ahc.png", "sz.png", "smhc.png"]
-    def __init__(self):
+    def __init__(self, json_str=None):
         super(Hamiltonian, self).__init__()
-        self.coefs = {}
-        for i, p1 in enumerate(self.params):
-            for j, p2 in enumerate(self.params[i:]):
-                self.coefs[(p1, p2)] = 0
+        if json_str is None:
+            self.coefs = {}
+            for i, p1 in enumerate(self.params):
+                for j, p2 in enumerate(self.params[i:]):
+                    self.coefs[(p1, p2)] = 0
+        else:
+            print 'json?', json_str
+            obj =  json.loads(json_str)
+            self.coefs = { tuple(k.split(',')): v for k, v in obj.items()}
 
         self.image_pixmaps = [Qt.QPixmap('latex/' + i) for i in self.images]
         self.image_pixmaps = [i.scaledToHeight(10, Qt.Qt.SmoothTransformation) for i in self.image_pixmaps]
+
+    def __repr__(self):
+        obj = { ','.join(k):v for k, v in self.coefs.items() }
+        return json.dumps(obj)
 
     def rowCount(self, parent=None):
         return len(self.params)
@@ -113,6 +129,21 @@ class HamiltonianWidget(Named):
 class HamiltonianListModel(NamedListModel):
     type_name = "Hamiltonian"
     default_factory = HamiltonianWidget
+    def __init__(self, filename=hamiltonian_filename):
+        try:
+            make_widget = lambda n, s: HamiltonianWidget(name=n, model=Hamiltonian(json_str=s))
+            widgets = [make_widget(*i) for i in json.load(open(filename)).items()]
+            if not widgets:
+                widgets = None
+            super(HamiltonianListModel, self).__init__(widgets=widgets)
+        except Exception as e:
+            print "Couldn't load hamiltonians", e
+            super(HamiltonianListModel, self).__init__()
+
+    def save_state(self):
+        obj = {h.name: str(h.model) for h in self.widget_list}
+        json.dump(obj, open(hamiltonian_filename, 'w'))
+
 
 class HamiltonianListView(NamedListView):
     list_model_class = HamiltonianListModel
@@ -122,15 +153,18 @@ class HamiltonianListView(NamedListView):
         copy_action = Qt.QAction("Copy", self)
         copy_action.triggered.connect(self.copy_selected)
         self.addAction(copy_action)
+
+        save_action = Qt.QAction("Save", self)
+        save_action.triggered.connect(self.model.save_state)
+        self.addAction(save_action)
+
         self.setContextMenuPolicy(Qt.Qt.ActionsContextMenu)
 
     def copy_selected(self):
         original = self.model.get_widget(self.list_widget.selectedIndexes()[0])
         new = original.copy()
-        while new.name in self.model.names():
-            new.name = increment_str(new.name)
-
         self.add_item(new)
+
 
 class Sequence(Qt.QAbstractTableModel):
     def __init__(self):
@@ -231,20 +265,6 @@ class SequenceListModel(NamedListModel):
 
 class SequenceListView(NamedListView):
     list_model_class = SequenceListModel
-
-    def __init__(self):
-        super(SequenceListView, self).__init__()
-
-        self.setContextMenuPolicy(Qt.Qt.ActionsContextMenu)
-        new_action = Qt.QAction("New Sequence", self)
-        new_action.triggered.connect(self.new_sequence)
-        self.addAction(new_action)
-
-    def new_sequence(self):
-        new = SequenceView()
-        while new.name in self.model.names():
-            new.name = increment_str(new.name)
-        self.add_item(new)
 
 class SequenceEditor(VBox):
     def __init__(self):
@@ -351,9 +371,6 @@ class SequencePlotter(Qt.QSplitter):
 
     def compute_item(self, name, model):
         name += "_1"
-        while name in self.viewer.model.names():
-            name = increment_str(name)
-
         fock_dim = self.editor.fock_dim.value()
         timestep = self.editor.timestep.value()
         initial_alpha = self.editor.initial_alpha.value()
@@ -370,7 +387,6 @@ class SequencePlotter(Qt.QSplitter):
         seq = Sequence()
         seq.steps.append([w, t])
         self.compute_item(w.name, seq)
-
 
 
 

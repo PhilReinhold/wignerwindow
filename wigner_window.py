@@ -7,10 +7,10 @@ import numpy as np
 import sys
 import json
 
-if not os.path.exists("~/.wigner"):
-    os.makedirs("~/.wigner")
-hamiltonian_filename = "~/.wigner/hamiltonians"
-sequence_filename = "~/.wigner/sequences"
+if not os.path.exists("/Users/phil/.wigner"):
+    os.makedirs("/Users/phil/.wigner")
+hamiltonian_filename = "/Users/phil/.wigner/hamiltonians"
+sequence_filename = "/Users/phil/.wigner/sequences"
 
 class Hamiltonian(Qt.QAbstractTableModel):
     params = ["id", "a*ad", "a+hc", "sz", "sm+hc"]

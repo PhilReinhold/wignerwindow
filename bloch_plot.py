@@ -4,7 +4,7 @@ import pyqtgraph
 from qutip import sigmaz, sigmay, sigmax, propagator, qeye, num
 from qt_helpers import VBox, Parameter, HorizontalSlider
 
-radius = 200
+radius = 300
 delta = 3
 xs, ys = np.mgrid[-400:400, -400:400]
 rs1 = np.sqrt(xs**2 + ys**2)
@@ -70,7 +70,6 @@ class BlochPlotter(VBox):
     def update_background(self):
         theta = self.azimuthal_slider.value() / 100.
         phi = self.z_rotation_slider.value() / 100.
-        print phi
         zs = ys / np.tan(theta)
         rs2 = np.sqrt(xs**2 + ys**2 + zs**2)
         c2 = circle(rs2)
@@ -85,12 +84,11 @@ class BlochPlotter(VBox):
         if self.qubit_dm is None:
             im = self.background
         else:
-            x, z, y = [(self.qubit_dm * s).tr().real * radius / 2. for s in paulis]
+            x, z, y = [(self.qubit_dm * s).tr().real * radius for s in paulis]
             theta = self.azimuthal_slider.value() / 100.
             phi = self.z_rotation_slider.value() / 100.
             image_x = x*np.cos(phi) - z*np.sin(phi)
             image_y = y + (x*np.sin(phi) + z*np.cos(phi))*np.sin(theta)
-            #im = join(self.background, ray(x, y + np.sin(theta)*z, 5))
             im = join(self.background, ray(image_x, image_y, 5))
         self.plot.setImage(im, autoHistogramRange=False)
 
